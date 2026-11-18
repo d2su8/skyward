@@ -385,6 +385,8 @@ fn started(phone: &Phone, program: &Program, ready: Ready, registers: Vec<String
         Ready::HardwareService(name) => (None, None, Some(name)),
     };
     let service = Service {
+        mounts: Vec::new(),
+        environment: Default::default(),
         path: phone.started_from(&program.path),
         args: program.args.clone(),
         libraries: libraries_of(&program.path, phone.bundle.as_deref()),

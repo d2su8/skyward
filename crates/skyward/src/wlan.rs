@@ -653,10 +653,25 @@ fn place(file: &Firmware) -> Result<()> {
         Some(partition) => {
             let at = Path::new(PARTITIONS).join(partition);
             fs::create_dir_all(&at).with_context(|| format!("make {}", at.display()))?;
-            skyward_block::mount::mount_ro(&Path::new(skyward_block::BY_NAME).join(partition), &at)?;
-            let read = fs::read(at.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
-            skyward_block::mount::umount(&at)?;
-            read?
+            use std::os::unix::fs::MetadataExt;
+            let device = Path::new(skyward_block::BY_NAME).join(partition);
+            let number = fs::metadata(&device)?.rdev();
+            let points = skyward_block::mount::points_of((libc::major(number) as u32, libc::minor(number) as u32))?;
+            let existing = points.first();
+            if existing.is_none() {
+                skyward_block::mount::mount_ro(&device, &at)?;
+            }
+            let source = existing.map_or(at.as_path(), |p| p.as_path());
+            let read = fs::read(source.join(&file.path)).with_context(|| format!("read {} on {partition}", file.path));
+            if existing.is_none() { skyward_block::mount::umount(&at)?; }
+            match read {
+                Ok(bytes) => bytes,
+                Err(e) if file.optional && e.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {
+                    skyward_sys::kmsg(&format!("optional WLAN firmware {} absent; the driver supplies its default", file.name))?;
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            }
         }
     };
     fs::write(&to, bytes).with_context(|| format!("write {}", to.display()))

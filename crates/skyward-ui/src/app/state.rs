@@ -20,6 +20,13 @@ pub struct State {
     /// place in [`TIME_ZONES`].
     pub time_zone: usize,
     pub vibrate: bool,
+    /// Hardware capability, independent of the saved touch-feedback preference.
+    pub supports_vibration: bool,
+    /// Use the tablet layout and offer tablet display preferences.
+    pub tablet: bool,
+    /// Follow the orientation sensor; off keeps the current direction.
+    pub auto_rotate: bool,
+    pub rotation: crate::rotation::Rotation,
     /// How strongly the motor taps, from 0 at the slider's left end to 1
     /// at its right.
     pub vibration: f32,
@@ -194,6 +201,10 @@ impl Default for State {
             screen_off: 3,
             time_zone: 0,
             vibrate: true,
+            supports_vibration: true,
+            tablet: false,
+            auto_rotate: true,
+            rotation: crate::rotation::Rotation::Native,
             vibration: SLIDER_START,
             file_transfer: true,
             reboot: 0,

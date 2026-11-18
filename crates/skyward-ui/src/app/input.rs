@@ -5,6 +5,81 @@ use super::*;
 
 impl App {
     pub fn touch(&mut self, ev: Touch, f: &Fonts, now: u64) -> Vec<Effect> {
+        match ev {
+            Touch::Down(..) => self.touching = true,
+            Touch::Up => self.touching = false,
+            Touch::Move(..) => {},
+        }
+        if !self.display_on {
+            return Vec::new();
+        }
+        // Full-screen overlays consume touches before either tablet pane.
+        if self.charge_shown() {
+            if matches!(ev, Touch::Down(..)) {
+                self.dismiss_charging(now);
+                self.drag = Drag::Waking;
+                if let Some(tablet) = &mut self.tablet {
+                    tablet.cancel_gesture();
+                }
+            }
+            return Vec::new();
+        }
+        if let Some(mut tablet) = self.tablet.take() {
+            if matches!(ev, Touch::Down(..)) && self.just_woke(now) {
+                self.wake(now);
+                tablet.cancel_gesture();
+                self.tablet = Some(tablet);
+                return Vec::new();
+            }
+            let routed = tablet.route(ev);
+            let effects = match routed {
+                crate::tablet::Input::Detail(event) => self.touch_detail(event, f, now),
+                crate::tablet::Input::Select(screen) if self.display_on && !self.just_woke(now) => {
+                    self.stir(now);
+                    self.tablet_section(screen, now)
+                }
+                crate::tablet::Input::Select(_) => { self.wake(now); Vec::new() }
+                crate::tablet::Input::Sidebar => { self.stir(now); self.dirty = true; Vec::new() }
+            };
+            self.tablet = Some(tablet);
+            return effects;
+        }
+        self.touch_detail(ev, f, now)
+    }
+
+    pub(super) fn tablet_section(&mut self, screen: Screen, now: u64) -> Vec<Effect> {
+        if self.screen() == screen { return Vec::new(); }
+        // Keep modal workflows and in-flight work on their existing pages.
+        if matches!(self.screen(), Screen::Editor | Screen::Installing | Screen::BackupJob | Screen::PartWork |
+            Screen::Erase | Screen::Relabel | Screen::SkywardUpdate | Screen::FileJob | Screen::CantStart |
+            Screen::Unhandled | Screen::Fastboot) || matches!(self.state.data, Data::Opening | Data::Locked { checking: true, .. }) {
+            self.say(self.state.lang.pick(["请先完成当前操作或返回", "請先完成目前操作或返回", "Finish this operation or go back first"]), now);
+            return Vec::new();
+        }
+        self.end_turn();
+        self.leave(false);
+        self.morph = None;
+        self.drag = Drag::Idle;
+        self.state.password.clear();
+        self.state.code.clear();
+        self.state.pattern.clear();
+        self.state.joining = None;
+        self.state.details = None;
+        self.state.clip = None;
+        self.state.adding = None;
+        self.state.mount_failure = None;
+        self.state.next_slot = None;
+        self.state.restore = None;
+        self.state.file = None;
+        self.state.asking_delete = false;
+        self.stack.truncate(1);
+        self.stack[0] = (Screen::Home, 0.0, Focus::Unset);
+        let effects = self.act(Action::Open(screen), now);
+        self.keys = false;
+        effects
+    }
+
+    fn touch_detail(&mut self, ev: Touch, f: &Fonts, now: u64) -> Vec<Effect> {
         // A finger on the dark panel lights nothing, as on the phone's own
         // system, where the power key lights it.
         if !self.display_on {
@@ -57,7 +132,7 @@ impl App {
                 };
                 // The first page has nothing to go back to: its edges are
                 // like the rest of it.
-                let at_edge = side.filter(|_| self.stack.len() > 1);
+                let at_edge = side.filter(|_| self.can_go_back());
                 // A swipe in from an edge goes back over whatever the page is
                 // doing: a finger landing there leaves a gliding or springing
                 // page alone until it drags the page, and presses nothing.
@@ -110,7 +185,9 @@ impl App {
                 // the finger lands on it, if the finger stays.
                 let row = hit
                     .filter(|&(a, r)| self.frame.as_ref().is_some_and(|fr| fr.hits.contains(&Hit { rect: r, action: a })))
-                    .filter(|&(a, r)| row_wide(&t, r) && !matches!(a, Action::Open(Screen::Search) | Action::Confirm(_) | Action::TypeInto(_)))
+                    .filter(|&(a, r)| {
+                        row_wide(&t, r) && !matches!(a, Action::Open(Screen::Search) | Action::Confirm(_) | Action::TypeInto(_))
+                    })
                     .map(|(_, r)| r);
                 self.drag = match hit {
                     Some((Action::Slider(which), track)) => {
@@ -174,7 +251,7 @@ impl App {
                     let ready = travel > m.dp(BACK_SWIPE_DP);
                     // A tap of the motor as the `<` appears, as the system
                     // gives.
-                    if ready && !armed && self.state.vibrate {
+                    if ready && !armed && self.state.supports_vibration && self.state.vibrate {
                         fx.push(Effect::Haptic);
                     }
                     self.drag = Drag::Edge { start, from_left, armed: ready, x, cy };
@@ -261,7 +338,7 @@ impl App {
                 Drag::Pattern => fx.extend(self.drawn(now)),
                 // Let go, the strength slider taps the motor as strongly as
                 // it was left at.
-                Drag::Slider(Slider::Vibration, _) if self.state.vibrate => fx.push(Effect::Haptic),
+                Drag::Slider(Slider::Vibration, _) if self.state.supports_vibration && self.state.vibrate => fx.push(Effect::Haptic),
                 _ => {}
             },
         }
@@ -378,7 +455,7 @@ impl App {
         self.stir(now);
         self.button = Some((key, Press::Spent));
         let mut fx = Vec::new();
-        if self.state.vibrate {
+        if self.state.supports_vibration && self.state.vibrate {
             fx.push(Effect::Haptic);
         }
         fx.push(Effect::Screenshot { storage: self.state.place_open(Place::Storage) });

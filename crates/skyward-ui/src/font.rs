@@ -299,7 +299,7 @@ impl Fonts {
 /// The typefaces the recovery image carries, from the repository.
 #[cfg(test)]
 pub(crate) fn bundled() -> Fonts {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources/fonts");
+    let dir = std::env::var("SKYWARD_TEST_FONTS").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources/fonts").into());
     Fonts::load(format!("{dir}/MiSansVF.ttf"), 0, format!("{dir}/KirkMono-Regular.ttf")).unwrap()
 }
 

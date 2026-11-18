@@ -2,12 +2,13 @@ use crate::backup;
 use crate::decrypt::{self, Decryptor};
 use crate::filework;
 use crate::haptics::Haptics;
-use crate::relabel;
 use crate::input::{monotonic_ms, Event, Inputs};
 use crate::merge;
+use crate::orientation::Sensor;
 use crate::partwork;
 use crate::pty;
 use crate::readings::{Reading, Readings};
+use crate::relabel;
 use crate::secure;
 use crate::services;
 use crate::settings;
@@ -17,20 +18,20 @@ use crate::wipe::{self, Eraser, Step};
 use crate::wlan;
 use anyhow::{anyhow, ensure, Context, Result};
 use skyward_block::fsck::Fixed;
+use skyward_block::usb::{self, Drive};
 use skyward_block::{fstab, mount, probe};
 use skyward_config::{DeviceConfig, Service};
 use skyward_crypto::data::{Closed, Opened};
+use skyward_files::Ownership;
 use skyward_install::asked::{self, Needs};
 use skyward_install::{Detach, Installer, Options};
-use skyward_sys::bcb::{self, Work, REFORMATS};
-use skyward_sys::control::{Control, Request};
-use skyward_sys::Power;
-use skyward_files::Ownership;
-use skyward_block::usb::{self, Drive};
 use skyward_net::download::{self, Failure};
 use skyward_net::http::Servers;
 use skyward_net::release::{Installed, Release, Unanswered};
 use skyward_net::wlan::{Power as WlanPower, Stage as Joining, Wlan};
+use skyward_sys::bcb::{self, Work, REFORMATS};
+use skyward_sys::control::{Control, Request};
+use skyward_sys::Power;
 use skyward_sys::sleep::{Sleeper, Slept};
 use skyward_sys::uevent;
 use skyward_systems::Who;
@@ -41,6 +42,7 @@ use skyward_ui::app::{
     INSTALL_UNFINISHED, USB_DRIVE,
 };
 use skyward_ui::settings::Keeper;
+use skyward_ui::rotation::{Rotation, Turn};
 use skyward_ui::surface::kms::KmsSurface;
 use skyward_ui::{Canvas, Fonts, Lang, Surface};
 use skyward_vab::{Merge, Standing};
@@ -90,7 +92,7 @@ struct Backlight {
 }
 
 impl Backlight {
-    fn open() -> Result<Self> {
+    fn open(normal_brightness: Option<u32>) -> Result<Self> {
         let mut dirs: Vec<PathBuf> = fs::read_dir("/sys/class/backlight")
             .context("read /sys/class/backlight")?
             .map(|e| e.map(|e| e.path()))
@@ -110,7 +112,14 @@ impl Backlight {
                 .parse()
                 .with_context(|| format!("parse {name}"))
         };
-        let top = normal_max(read("max_brightness")?)?;
+        let max = read("max_brightness")?;
+        let top = match normal_brightness {
+            Some(top) => {
+                ensure!(top > 0 && top <= max, "configured normal brightness {top} exceeds backlight maximum {max}");
+                top
+            }
+            None => normal_max(max)?,
+        };
         let level = read("brightness")?;
         Ok(Backlight { path: dir.join("brightness"), top, level })
     }
@@ -416,7 +425,9 @@ fn save_screenshot(frame: &Canvas, storage: bool, zone: usize) -> Result<Shot> {
 fn keep_held_screenshots() -> Result<()> {
     let held = Path::new(HELD_SCREENSHOTS);
     let shots = match fs::read_dir(held) {
-        Ok(entries) => entries.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>().with_context(|| format!("read {}", held.display()))?,
+        Ok(entries) => {
+            entries.map(|e| e.map(|e| e.path())).collect::<std::io::Result<Vec<_>>>().with_context(|| format!("read {}", held.display()))?
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("read {}", held.display())),
     };
@@ -1075,6 +1086,17 @@ fn wait(fds: &[i32], timeout_ms: i32) -> Result<()> {
     Ok(())
 }
 
+fn present(surface: &mut KmsSurface, screen: &Canvas, rotation: Rotation, native: &mut Option<Canvas>) -> Result<()> {
+    if rotation == Rotation::Native {
+        return surface.present(screen);
+    }
+    let (w, h) = surface.size();
+    let out = native.get_or_insert_with(|| Canvas::new(w, h));
+    rotation.paint(screen, out);
+    surface.present(out)
+}
+
+
 /// How work on files ended, as its page tells it.
 fn job_end(end: filework::End) -> JobEnd {
     match end {
@@ -1120,6 +1142,13 @@ struct Pages<'a> {
     surface: KmsSurface,
     /// The frame last drawn.
     screen: Canvas,
+    rotation: Rotation,
+    native: Option<Canvas>,
+    rotation_turn: Option<Turn>,
+    turn_canvas: Option<Canvas>,
+    blocked_touch: bool,
+    orientation: Option<Sensor>,
+    first_frame: bool,
     inputs: Inputs,
     started: Instant,
     /// Whether the wait for a touch panel to come up is over.
@@ -1252,11 +1281,11 @@ impl<'a> Pages<'a> {
             surface.settle()?;
         }
         eprintln!("display {}", surface.describe());
-        let inputs = Inputs::open(w, h, cfg.touch.writes.clone())?;
+        let inputs = Inputs::open(w, h, cfg.touch.clone())?;
         let started = Instant::now();
         let control = Control::open()?;
-        let haptics = cfg.haptics.as_ref().map(Haptics::open).transpose()?;
-        let backlight = Backlight::open()?;
+        let haptics = cfg.haptics.as_ref().filter(|_| cfg.device.supports_vibration != Some(false)).map(Haptics::open).transpose()?;
+        let backlight = Backlight::open(cfg.display.normal_brightness)?;
         let first = match &request.work {
             Work::Fastboot => Screen::Fastboot,
             Work::PromptWipeData => Screen::CantStart,
@@ -1284,6 +1313,7 @@ impl<'a> Pages<'a> {
         let locale = request.locale.as_deref().or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
+        app.configure_device(cfg);
         let keeper = Keeper::new(&kept);
         skyward_sys::kmsg(&format!(
             "the pages speak {:?}, {}, and the locale named is {}",
@@ -1297,7 +1327,10 @@ impl<'a> Pages<'a> {
             app.set_boot_slots(read_slots());
         }
         app.set_asked(asked(&request));
-        let screen = Canvas::new(w, h);
+        let rotation = app.rotation();
+        let (logical_w, logical_h) = rotation.size(w, h);
+        app.resize(logical_w, logical_h);
+        let screen = Canvas::new(logical_w, logical_h);
         // A page sliding over another draws on three screens' worth of canvas
         // besides the panel's: made ready now, the first slide finds them so.
         Canvas::keep_ready(w, h, 3);
@@ -1375,6 +1408,13 @@ impl<'a> Pages<'a> {
             fonts,
             surface,
             screen,
+            rotation,
+            native: None,
+            rotation_turn: None,
+            turn_canvas: None,
+            blocked_touch: false,
+            orientation: cfg.orientation.as_ref().filter(|_| cfg.device.tablet).map(Sensor::new),
+            first_frame: true,
             inputs,
             started,
             touch_known: false,
@@ -1614,6 +1654,41 @@ impl<'a> Pages<'a> {
     /// What time passing asks for: the motor's clicks and ticks, and the
     /// status bar's clock drawn again as its minute turns.
     fn tick(&mut self, now: u64) -> Result<()> {
+        let (w, h) = self.surface.size();
+        if let Some(sensor) = &mut self.orientation
+            && let Some(direction) = sensor.read(self.app.rotation_enabled(), now)
+            && self.rotation_turn.is_none() && !self.blocked_touch
+        {
+            self.app.follow_rotation(direction);
+        }
+        if (self.rotation_turn.as_ref().is_some_and(|turn| turn.done(now)) || !self.app.display_on()) && self.rotation_turn.take().is_some() {
+            self.app.redraw();
+        }
+        if self.app.rotation() != self.rotation {
+            let animate = self.app.display_on() && self.app.screen() != Screen::Fastboot && !self.first_frame;
+            let before = if animate {
+                let mut before = Canvas::new(w, h);
+                self.rotation.paint(&self.screen, &mut before);
+                Some(before)
+            } else { None };
+            let previous = self.rotation;
+            self.rotation = self.app.rotation();
+            let (logical_w, logical_h) = self.rotation.size(w, h);
+            self.app.resize(logical_w, logical_h);
+            self.screen = Canvas::new(logical_w, logical_h);
+            let (rows, cols) = self.app.term_size(&self.fonts);
+            self.app.term_resized(rows, cols);
+            if let Some(shell) = &mut self.shell {
+                shell.resize(rows, cols)?;
+            }
+            if let Some(before) = before {
+                self.app.compose(&mut self.screen, &self.fonts, &self.info, &self.shown_clock, now);
+                let after = self.native.get_or_insert_with(|| Canvas::new(w, h));
+                self.rotation.paint(&self.screen, after);
+                self.rotation_turn = Some(Turn::new(&before, after, previous, self.rotation, monotonic_ms()));
+            }
+        }
+
         for fx in self.app.tick(now) {
             match fx {
                 Effect::Haptic => self.click()?,
@@ -1691,10 +1766,18 @@ impl<'a> Pages<'a> {
         let mut shown = false;
         if panel.is_some() {
             // A display turned off comes on again with a frame drawn for it.
-            if self.app.take_dirty() || !self.surface.is_on() {
+            if self.app.take_dirty() || !self.surface.is_on() || self.rotation_turn.is_some() {
                 let t0 = Instant::now();
-                self.app.compose(&mut self.screen, &self.fonts, &self.info, &self.shown_clock, now);
-                self.surface.present(&self.screen)?;
+                if let Some(turn) = &mut self.rotation_turn {
+                    let (w, h) = self.surface.size();
+                    let out = self.turn_canvas.get_or_insert_with(|| Canvas::new(w, h));
+                    turn.paint(out, self.app.theme().pal.bg, now);
+                    self.surface.present(out)?;
+                } else {
+                    self.app.compose(&mut self.screen, &self.fonts, &self.info, &self.shown_clock, now);
+                    present(&mut self.surface, &self.screen, self.rotation, &mut self.native)?;
+                }
+                self.first_frame = false;
                 eprintln!("frame {:?} in {} ms", self.app.screen(), t0.elapsed().as_millis());
                 if let Some(path) = self.dump {
                     fs::write(path, &self.screen.data).with_context(|| format!("write {}", path.display()))?;
@@ -1707,7 +1790,7 @@ impl<'a> Pages<'a> {
             // to 0 and the display off, so an OLED that floors the backlight
             // above zero rather than cutting it shows nothing as it goes off.
             self.screen.data.fill(0);
-            self.surface.present(&self.screen)?;
+            present(&mut self.surface, &self.screen, self.rotation, &mut self.native)?;
             self.surface.settle()?;
             self.blanked = true;
         }
@@ -1751,7 +1834,7 @@ impl<'a> Pages<'a> {
         let until_due = self.app.deadline(now).map(|d| d.saturating_sub(now) as i32);
         // A resting panel turns off once its rest is over.
         let rest_left = self.rested_at.map(|at| REST.saturating_sub(at.elapsed()).as_millis() as i32);
-        let timeout = if ahead { 0 } else { until_due.into_iter().chain(rest_left).min().map_or(1000, |t| t.clamp(floor, 1000)) };
+        let timeout = if ahead || self.rotation_turn.is_some() { 0 } else { until_due.into_iter().chain(rest_left).min().map_or(1000, |t| t.clamp(floor, 1000)) };
         sleeper.allow(self.may_sleep()?);
         let mut fds = vec![self.inputs.fd(), uevents.fd(), sleeper.fd()];
         if let Some(i) = &self.installer {
@@ -1803,6 +1886,7 @@ impl<'a> Pages<'a> {
             fds.push(s.fd());
         }
         fds.push(self.readings.fd());
+        if let Some(fd) = self.orientation.as_ref().and_then(Sensor::fd) { fds.push(fd); }
         wait(&fds, timeout)
     }
 
@@ -2456,7 +2540,13 @@ impl Pages<'_> {
                     skyward_sys::kmsg(&format!("asked on the recovery socket: {asked:?}"))?;
                     answer(asked, self.fastboot)
                 }
-                Incoming::Input(Event::Touch(t, at)) => self.app.touch(t, &self.fonts, at),
+                Incoming::Input(Event::Touch(t, at)) => {
+                    if self.rotation_turn.is_some() || self.blocked_touch {
+                        self.blocked_touch = t != skyward_ui::app::Touch::Up;
+                        continue;
+                    }
+                    self.app.touch(self.rotation.touch(t, self.surface.size().0, self.surface.size().1), &self.fonts, at)
+                }
                 Incoming::Input(Event::Key(k, true)) => self.app.key(k, now),
                 Incoming::Input(Event::Key(k, false)) => self.app.key_up(k, now),
             };
@@ -2980,6 +3070,7 @@ impl Pages<'_> {
         read_details(self.cfg, &mut self.info, &mut self.unread.details)?;
         self.fastboot = false;
         self.app.enter_recovery();
+        self.app.configure_device(self.cfg);
         if let Some(w) = self.systems_worker.as_mut() {
             w.send(systems::Task::Resume);
         }

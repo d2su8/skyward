@@ -28,6 +28,13 @@ impl App {
         self.refresh();
     }
 
+    pub fn term_resized(&mut self, rows: u16, cols: u16) {
+        if let Some(term) = &mut self.term {
+            term.resize(rows, cols);
+            self.refresh();
+        }
+    }
+
     /// What the shell wrote.
     pub fn term_output(&mut self, bytes: &[u8]) {
         let term = self.term.as_mut().expect("only a shell that started writes");
@@ -42,7 +49,8 @@ impl App {
     pub fn term_ended(&mut self, end: TermEnd) {
         let (l, term) = (self.state.lang, self.term.as_mut().expect("only a shell that started ends"));
         let how = fmt::term_end(l, &end);
-        term.feed(tr!(l, "\r\n[{how}。按「回车」重新启动]\r\n", "\r\n[{how}。按「Enter」重新啟動]\r\n", "\r\n[{how}. Press Enter to start it again]\r\n").as_bytes());
+        term.feed(tr!(l, "\r\n[{how}。按「回车」重新启动]\r\n", "\r\n[{how}。按「Enter」重新啟動]\r\n", "\r\n[{how}. Press Enter to start it again]\r\n").as_bytes(),
+        );
         term.running = false;
         if self.screen() == Screen::Terminal {
             self.refresh();

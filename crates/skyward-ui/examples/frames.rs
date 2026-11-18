@@ -344,6 +344,7 @@ fn info() -> DeviceInfo {
         ram_kib: 15_556_972,
         panel: Some((W, H)),
         screen: Some(6.73),
+        battery_capacity_mah: None,
         os_version: None,
         android: None,
         locale: None,

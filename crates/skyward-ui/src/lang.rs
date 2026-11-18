@@ -131,7 +131,9 @@ mod tests {
     fn the_typeface_draws_every_text_the_pages_write() {
         let f = crate::font::bundled();
         let mut texts = Texts::default();
-        read(&mut texts, &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+        let sources = std::env::var_os("SKYWARD_TEST_SOURCES").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("src"));
+        read(&mut texts, &sources);
         assert!(texts.0.iter().any(|t| t.contains("簽章")), "the texts in traditional characters are read");
         let missing: BTreeSet<char> = texts.0.iter().flat_map(|t| t.chars()).filter(|&ch| !ch.is_control() && !f.body.has(ch)).collect();
         assert!(missing.is_empty(), "MiSans draws none of {missing:?}");

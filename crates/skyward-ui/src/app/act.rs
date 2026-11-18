@@ -8,7 +8,7 @@ impl App {
         let l = self.state.lang;
         match action {
             Action::Open(s) => {
-                if s == Screen::Search && self.screen() == Screen::Home {
+                if !self.tablet_mode && s == Screen::Search && self.screen() == Screen::Home {
                     // The bar moves up from where it stands unfolded: a
                     // page easing there for the keys gets there at once.
                     if let Some((rest, _)) = self.seek.take() {
@@ -51,6 +51,7 @@ impl App {
             Action::Toggle(switch) => {
                 let on = match switch {
                     Switch::Vibrate => &mut self.state.vibrate,
+                    Switch::AutoRotate => &mut self.state.auto_rotate,
                     Switch::FileTransfer => &mut self.state.file_transfer,
                     Switch::Compress => &mut self.state.compress,
                     Switch::Verify => &mut self.state.verify,
@@ -611,7 +612,7 @@ impl App {
             Cap::Show(layer) => self.state.layer = layer,
             Cap::Enter => match self.screen() {
                 Screen::Search => {
-                    if let Some(first) = search::find_on(&self.state.search, l, |screen| self.state.offers(screen)).first() {
+                    if let Some(first) = search::find_available(&self.state.search, l, |screen| self.state.offers(screen), self.state.supports_vibration).first() {
                         return self.act(Action::Open(first.screen), now);
                     }
                 }

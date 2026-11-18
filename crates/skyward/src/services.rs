@@ -7,6 +7,7 @@ use skyward_sys::ueventd;
 use skyward_vab::Mounted;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
+use std::ffi::CString;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
@@ -130,6 +131,7 @@ fn to_its_end(s: &Service, who: &Credentials, given: &Given) -> Result<ExitStatu
 struct Given {
     sockets: Vec<(Socket, libc::uid_t, libc::gid_t)>,
     environment: Vec<(String, String)>,
+    mounts: Vec<(CString, CString)>,
 }
 
 impl Given {
@@ -142,7 +144,8 @@ impl Given {
             None => Ok(0),
         };
         let sockets = program.sockets.iter().map(|s| Ok((s.clone(), id(&s.user)?, id(&s.group)?))).collect::<Result<Vec<_>>>()?;
-        Ok(Self { sockets, environment: program.environment.clone() })
+        let mounts = program.service.mounts.iter().map(|m| Ok((CString::new(m.source.as_str())?, CString::new(m.target.as_str())?))).collect::<Result<Vec<_>>>()?;
+        Ok(Self { sockets, environment: program.environment.clone(), mounts })
     }
 
     /// Make each socket, as init makes them afresh every time it starts
@@ -407,7 +410,9 @@ fn command(s: &Service, who: &Credentials, given: &Given, handed: &[(String, Own
     for (variable, socket) in handed {
         cmd.env(variable, socket.as_raw_fd().to_string());
     }
+    cmd.envs(&s.environment);
     let who = who.clone();
+    let mounts = given.mounts.clone();
     let sockets: Vec<RawFd> = handed.iter().map(|(_, socket)| socket.as_raw_fd()).collect();
     // Only system calls run between the fork and the exec, on what was
     // worked out before it. The sockets are open in the recovery so that
@@ -415,6 +420,15 @@ fn command(s: &Service, who: &Credentials, given: &Given, handed: &[(String, Own
     // run they have to stay open through the exec.
     unsafe {
         cmd.pre_exec(move || {
+            if !mounts.is_empty() && (libc::unshare(libc::CLONE_NEWNS) != 0
+                || libc::mount(std::ptr::null(), c"/".as_ptr(), std::ptr::null(), libc::MS_REC | libc::MS_PRIVATE, std::ptr::null()) != 0) {
+                return Err(io::Error::last_os_error());
+            }
+            for (source, target) in &mounts {
+                if libc::mount(source.as_ptr(), target.as_ptr(), std::ptr::null(), libc::MS_BIND, std::ptr::null()) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             for socket in &sockets {
                 if libc::fcntl(*socket, libc::F_SETFD, 0) != 0 {
                     return Err(io::Error::last_os_error());
@@ -429,14 +443,25 @@ fn command(s: &Service, who: &Credentials, given: &Given, handed: &[(String, Own
 /// Lock in memory every file the running programs have mapped or open on
 /// the `mounted` partitions, so they keep working once those partitions
 /// are written over, and give the mount points the files are on. The
-/// locked mappings stay for the rest of the recovery's life.
+/// locked mappings stay for the rest of the recovery's life. Private
+/// service namespaces also hold mounts without opening any files; their
+/// devices must stay mapped just as those with files in use do.
 pub fn pin(services: &[Service], mounted: &[Mounted]) -> Result<Vec<PathBuf>> {
     let mut files = BTreeSet::new();
+    let devices = mounted.iter().map(|m| Ok((skyward_block::devnum(&m.device)?, &m.mount_point))).collect::<Result<Vec<_>>>()?;
+    let mut busy: Vec<PathBuf> = Vec::new();
     // A program run once has ended, and one between restarts has nothing in
     // memory to keep either.
     for s in services.iter().filter(|s| !s.oneshot) {
         let Some(pid) = running(&s.path) else { continue };
         let process = Process::new(pid as i32).with_context(|| format!("open process {pid}"))?;
+        let held = crate::service_mounts::held(pid).with_context(|| format!("read the mount namespace of {}", s.path))?;
+        for (device, point) in &devices {
+            if held.contains(device) && !busy.contains(point) {
+                busy.push((*point).clone());
+                let _ = skyward_sys::kmsg(&format!("kept {} mapped for the private mount namespace of {}", point.display(), s.path));
+            }
+        }
         for map in process.maps().with_context(|| format!("read the mappings of {}", s.path))? {
             if let MMapPath::Path(p) = map.pathname {
                 files.insert(p);
@@ -448,7 +473,6 @@ pub fn pin(services: &[Service], mounted: &[Mounted]) -> Result<Vec<PathBuf>> {
             }
         }
     }
-    let mut busy: Vec<PathBuf> = Vec::new();
     for file in files {
         let Some(m) = mounted.iter().find(|m| file.starts_with(&m.mount_point)) else { continue };
         if !fs::metadata(&file).with_context(|| format!("stat {}", file.display()))?.is_file() {

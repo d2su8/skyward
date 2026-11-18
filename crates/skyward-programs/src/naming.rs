@@ -104,6 +104,8 @@ fn run(phone: &Phone, command: &[String]) -> Result<Started> {
     };
     ensure!(!program.is_empty(), "`{}` names no program", line());
     let service = Service {
+        mounts: Vec::new(),
+        environment: Default::default(),
         path: phone.started_from(&program[0]),
         args: program[1..].to_vec(),
         libraries: libraries_of(&program[0], phone.bundle.as_deref()),
@@ -145,6 +147,8 @@ mod tests {
     fn once(path: &str, args: &[&str], libraries: &[&str], user: Option<&str>, groups: &[&str]) -> Does {
         let words = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         Does::Run(Box::new(Started::from(Service {
+            mounts: Vec::new(),
+            environment: Default::default(),
             path: path.to_string(),
             args: words(args),
             libraries: words(libraries),
