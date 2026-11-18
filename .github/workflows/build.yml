@@ -206,7 +206,7 @@ jobs:
           root = pathlib.Path("images")
           builds = []
           for device in json.loads(os.environ["DEVICES"]):
-              config = tomllib.loads(pathlib.Path(f"devices/{device}.toml").read_text())
+              config = tomllib.loads(pathlib.Path(f"devices/{device}.toml").read_text(encoding="utf-8"))
               package, = root.glob(f"skyward-{os.environ['GITHUB_REF_NAME']}-{device}-*.zip")
               with zipfile.ZipFile(package) as archive:
                   image, = [name for name in archive.namelist() if name.endswith(".img")]
@@ -219,7 +219,7 @@ jobs:
                     "tag": os.environ["GITHUB_REF_NAME"],
                     "workflow": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
                     "builds": builds}
-          (root / "PROVENANCE.json").write_text(json.dumps(report, indent=2) + "\n")
+          (root / "PROVENANCE.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
           PY
       # Each zip shows on the release as the phone it is for, its model and
       # then its codename, which is how people look for theirs; a device
