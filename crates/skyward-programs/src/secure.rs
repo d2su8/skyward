@@ -41,6 +41,8 @@ const INSTANCE: &str = "default";
 /// What a weaver reaches its secure element through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Through {
+    /// Xiaomi's Weaver uses libGPTEE_vendor and the QTEE driver directly.
+    Qtee,
     /// Android's secure element service.
     ElementService,
     /// A service of the secure element's maker's own, by its interface.
@@ -51,7 +53,8 @@ enum Through {
 /// longer endings first: Thales' and NXP's go through Android's secure
 /// element service, and Goodix's, whose program is named after no maker,
 /// through Goodix's own.
-const WEAVERS: [(&str, Through); 3] = [
+const WEAVERS: [(&str, Through); 4] = [
+    ("android.hardware.weaver", Through::Qtee),
     (".thales", Through::ElementService),
     (".nxp-qti", Through::ElementService),
     ("weaver-service", Through::Own("vendor.goodix.hardware.secure_element_aidl.IGdxEse")),
@@ -237,10 +240,11 @@ pub fn programs(steps: &[Step]) -> Vec<&Started> {
 /// through, and then the weaver itself.
 fn weaver(phone: &Phone) -> Result<Vec<Step>> {
     let mut out = Vec::new();
-    let program = behind(phone, "the weaver", WEAVER, |file| file.contains("weaver-service"))?;
+    let program = behind(phone, "the weaver", WEAVER, |file| file == "android.hardware.weaver" || file.contains("weaver-service"))?;
     let file = file_name(program);
     let (_, through) = WEAVERS.iter().find(|(ending, _)| file.ends_with(ending)).with_context(|| format!("{} is a weaver of a make the recovery does not know", program.path))?;
     match through {
+        Through::Qtee => {}
         Through::Own(interface) => {
             let own = phone
                 .services

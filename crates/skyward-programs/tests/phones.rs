@@ -426,3 +426,22 @@ fn every_phone_s_init_names_the_build_its_vendor_partition_describes_after_its_c
         }
     }
 }
+
+/// Xiaomi's unsuffixed Weaver uses QTEE directly, without OMAPI or an eSE HAL.
+#[test]
+fn xiaomi_qtee_weaver_starts_without_a_secure_element_service() {
+    let mut phone = phone("nezha", &[("ro.boot.hardware", "qcom"), ("ro.special_edition", "true")]);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = "/odm/bin/hw/android.hardware.weaver";
+    let file = tmp.path().join("bin/hw/android.hardware.weaver");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, []).unwrap();
+    phone.partitions.iter_mut().find(|p| p.name == "odm").unwrap().at = tmp.path().into();
+    let weaver = phone.programs.iter_mut().find(|p| p.path.ends_with("/android.hardware.weaver-service")).unwrap();
+    weaver.path = path.into();
+    let steps = secure::steps(&phone).unwrap();
+    assert!(!steps.contains(&Step::ServeElements));
+    let started = secure::programs(&steps);
+    assert!(started.iter().any(|p| p.service.path == path && p.service.ready_service.as_deref() == Some(WEAVER)));
+    assert!(!started.iter().any(|p| p.service.path.contains("secure_element")));
+}

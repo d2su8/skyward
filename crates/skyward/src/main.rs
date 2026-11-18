@@ -308,6 +308,7 @@ fn main() -> Result<()> {
             let slot = booted_slot()?;
             let props = skyward_info::installed_props(slot)?;
             let cfg = DeviceConfig::load(&config)?;
+            secure::prepare_runtime()?;
             if let Some(orientation) = &cfg.orientation { orientation::prepare(orientation)?; }
             let services: Vec<Started> = cfg.services.into_iter().filter(|s| s.runs_on(&props)).map(Started::from).collect();
             let libraries = secure::libraries()?;
@@ -581,7 +582,7 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     let key_programs = found.as_deref().map(keys::programs).unwrap_or_default();
     let programs = || services.iter().map(|p| &p.service).chain(&key_programs);
     let hardware: Vec<String> = programs().filter_map(|s| s.ready_hardware_service.clone()).collect();
-    if !hardware.is_empty() {
+    if !hardware.is_empty() || programs().any(|s| s.path.ends_with("/hwservicemanager")) {
         secure::prepare_hardware_directory(&hardware)?;
         skyward_sys::kmsg("the directory for the phone's hardware services can run")?;
     }
@@ -608,6 +609,10 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
         skyward_sys::kmsg(&format!("the service directory is told of {} of the phone's own services", told.len()))?;
     }
     let libraries = secure::libraries()?;
+    // The phone's own programs link against its bionic, which newer Android
+    // keeps in the runtime bundle as the system's libc links into it. Open
+    // it regardless of whether a hardware directory was prepared above.
+    secure::prepare_runtime()?;
     if let Some(dir) = &libraries {
         skyward_sys::kmsg(&format!("the phone's own libraries are at {}", dir.display()))?;
     }

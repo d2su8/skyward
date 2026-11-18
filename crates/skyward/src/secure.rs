@@ -163,6 +163,31 @@ pub fn libraries() -> Result<Option<PathBuf>> {
     Ok(bundle(&format!("com.android.vndk.v{version}"))?.map(|at| at.join(BUNDLE_LIBS)))
 }
 
+/// Open the runtime bundle that carries the installed system's own bionic
+/// libraries. On newer Android the system's libc, libdl_android and friends
+/// are links into it, so the phone's own programs need it open to run even
+/// where the configuration names no older hardware service for which a
+/// directory would be prepared. It also points the early loader
+/// /system/bin/bootstrap/linker64 at the bundle's own loader, which
+/// hwservicemanager and other early programs ask for by that name.
+pub fn prepare_runtime() -> Result<()> {
+    let Some(at) = bundle(RUNTIME_BUNDLE)? else { return Ok(()) };
+    let from = at.join(BUNDLE_LOADER);
+    if from.is_file() {
+        let loader = Path::new(EARLY_LOADER);
+        let dir = loader.parent().expect("the loader is in a directory");
+        fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+        fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .with_context(|| format!("open {} to every user", dir.display()))?;
+        if loader.exists() {
+            fs::remove_file(loader).with_context(|| format!("take away {}", loader.display()))?;
+        }
+        std::os::unix::fs::symlink(&from, loader)
+            .with_context(|| format!("point {} at {}", loader.display(), from.display()))?;
+    }
+    Ok(())
+}
+
 /// Open the bundle of this name where it lies, and give where it is. A
 /// bundle the phone does not carry gives nothing; one already open is left
 /// as it is.
