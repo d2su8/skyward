@@ -1,7 +1,7 @@
 name: Build
 
 # Every push is linted and tested, and the recovery is built for every
-# device in devices/, each image zipped. A tag starting with v publishes
+# device in devices/ (yupei by default in the d2su8 fork), each image zipped. A tag starting with v publishes
 # those zips as a release, each shown as the phone it is for. Run by hand,
 # it can build for one device alone.
 on:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       device:
-        description: The codename of the one device to build for; every device when empty
+        description: Device codename; empty builds yupei in d2su8/skyward, all devices upstream
         required: false
         default: ""
 
@@ -40,6 +40,9 @@ jobs:
       - name: Hold the tag against the workspace's version
         run: |
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "$GITHUB_REPOSITORY" = d2su8/skyward ] && [[ "$GITHUB_REF_NAME" == "v$version-yupei.r"* ]] && [[ "${GITHUB_REF_NAME#v$version-yupei.r}" =~ ^[1-9][0-9]*$ ]]; then
+            exit 0
+          fi
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::the tag is $GITHUB_REF_NAME, and the workspace builds version $version"
             exit 1
@@ -48,6 +51,7 @@ jobs:
   check:
     name: Lint and test
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -61,6 +65,7 @@ jobs:
   tools:
     name: Build the recovery service and the packer
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
@@ -98,8 +103,11 @@ jobs:
           DEVICE: ${{ inputs.device }}
         run: |
           if [ -n "$DEVICE" ]; then
+            [[ "$DEVICE" =~ ^[a-z0-9_-]+$ ]]
             test -f "devices/$DEVICE.toml"
             echo "devices=$(jq -nc --arg device "$DEVICE" '[$device]')" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REPOSITORY" = d2su8/skyward ]; then
+            echo 'devices=["yupei"]' >> "$GITHUB_OUTPUT"
           else
             echo "devices=$(basename -s .toml devices/*.toml | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
           fi
@@ -108,6 +116,7 @@ jobs:
     name: Recovery for ${{ matrix.device }}
     needs: [tools, devices]
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -169,8 +178,9 @@ jobs:
   release:
     name: Publish the release
     if: github.ref_type == 'tag'
-    needs: [tag, check, recovery]
+    needs: [tag, check, devices, recovery]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -187,6 +197,30 @@ jobs:
       - name: Sum the zips
         working-directory: images
         run: sha256sum -- *.zip > SHA256SUMS
+      - name: Record the source and image checksums
+        env:
+          DEVICES: ${{ needs.devices.outputs.devices }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, tomllib, zipfile
+          root = pathlib.Path("images")
+          builds = []
+          for device in json.loads(os.environ["DEVICES"]):
+              config = tomllib.loads(pathlib.Path(f"devices/{device}.toml").read_text())
+              package, = root.glob(f"skyward-{os.environ['GITHUB_REF_NAME']}-{device}-*.zip")
+              with zipfile.ZipFile(package) as archive:
+                  image, = [name for name in archive.namelist() if name.endswith(".img")]
+                  data = archive.read(image)
+              builds.append({"device": device, "stock_version": config["stock"]["version"],
+                             "stock_recovery_sha256": config["stock"]["recovery"],
+                             "zip": package.name, "zip_sha256": hashlib.sha256(package.read_bytes()).hexdigest(),
+                             "image": image, "image_bytes": len(data), "image_sha256": hashlib.sha256(data).hexdigest()})
+          report = {"repository": os.environ["GITHUB_REPOSITORY"], "commit": os.environ["GITHUB_SHA"],
+                    "tag": os.environ["GITHUB_REF_NAME"],
+                    "workflow": f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+                    "builds": builds}
+          (root / "PROVENANCE.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
       # Each zip shows on the release as the phone it is for, its model and
       # then its codename, which is how people look for theirs; a device
       # whose zip is missing stops the release.
@@ -194,12 +228,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          DEVICES: ${{ needs.devices.outputs.devices }}
         run: |
           zips=()
-          for config in devices/*.toml; do
-            device=$(basename "$config" .toml)
+          while IFS= read -r device; do
+            config="devices/$device.toml"
             model=$(python3 -c 'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["device"]["model"])' "$config")
             zip=$(ls images/skyward-"$GITHUB_REF_NAME"-"$device"-*.zip)
             zips+=("$zip#$model ($device)")
-          done
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "${zips[@]}" images/SHA256SUMS
+          done < <(jq -r '.[]' <<< "$DEVICES")
+          if [ "$GITHUB_REPOSITORY" = d2su8/skyward ] && [[ "$GITHUB_REF_NAME" == *-yupei.r* ]]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease --latest=false \
+              --title "Skyward $GITHUB_REF_NAME — Xiaomi Pad 8 (yupei)" \
+              --notes-file .github/releases/yupei.md "${zips[@]}" images/SHA256SUMS images/PROVENANCE.json
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
+              "${zips[@]}" images/SHA256SUMS images/PROVENANCE.json
+          fi
