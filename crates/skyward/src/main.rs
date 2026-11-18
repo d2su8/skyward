@@ -53,6 +53,8 @@ mod waveform;
 mod wipe;
 #[cfg(target_os = "android")]
 mod wlan;
+#[cfg(any(target_os = "android", test))]
+mod wlan_ready;
 
 #[derive(Parser)]
 #[command(name = "skyward", version, about = "Skyward recovery")]

@@ -87,6 +87,9 @@ Skyward 是使用 Rust 编写的 recovery，从零开始编写。
 | --- | --- | --- |
 | 小米 17 Ultra | `nezha` | OS4.0.4.0.XPACNXM（Android 17） |
 | 小米 13 Ultra | `ishtar` | OS3.0.308.0.WMACNXM（Android 16） |
+| 小米 Pad 8 | `yupei` | OS4.0.12.0.XPZCNXM（Android 17） |
+
+yupei 已实测触摸、锁屏凭据解密、WLAN、自动旋转、选定项目的备份恢复，以及不写分区的脚本 ZIP 安装。尚未验证真实 ROM／OTA 写入和双系统。脚本安装会卸载已安装系统的挂载，安装后如需使用 WLAN，请先重启 Recovery。
 
 ### 🚧 施工中
 

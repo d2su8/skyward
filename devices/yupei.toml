@@ -1,0 +1,141 @@
+# Xiaomi Pad 8 (yupei) — 移植自 sheng（Xiaomi Pad 6S Pro 12.4）的适配。
+#
+# Hardware checked on HyperOS OS4.0.12.0.XPZCNXM. Touch, credential unlock,
+# WLAN and automatic rotation verified in Skyward on the physical tablet.
+[device]
+codename = "yupei"
+tablet = true
+supports_vibration = false
+brand = "Xiaomi"
+model = "Xiaomi Pad 8"
+ab = true
+soc = { hans = "第四代骁龙®8s移动平台", hant = "Snapdragon® 8s Gen 4 行動平台", en = "Snapdragon® 8s Gen 4 Mobile Platform" }
+os_version_prop = "ro.mi.os.version.incremental"
+# 官方标称 9200mAh（typ）
+battery_capacity_mah = 9200
+
+[init]
+writes = [{ path = "/sys/fs/selinux/enforce", value = "0" }]
+# Retain the gatekeeper property used by the verified recovery build.
+properties = { "vendor.gatekeeper.disable_spu" = "true" }
+
+[display]
+# 原生横屏面板（DRM DSI 3200x2136，最高 144Hz）。
+width = 3200
+height = 2136
+# 实机 ro.sf.lcd_density = 440
+density = 440
+diagonal = 11.2
+# 实机 /sys/class/backlight/panel0-backlight/max_brightness = 4095
+normal_brightness = 4095
+minimum_brightness = 1
+
+[touch]
+# 触摸控制器为 Novatek nt36532，复位节点与 sheng 相同（实机确认 /proc/xm_htc_sw_reset 存在）。
+writes = [{ path = "/proc/xm_htc_sw_reset", value = "1" }]
+# Portrait controller coordinates mapped to the native landscape panel.
+swap_xy = true
+flip_y = true
+# 实机 getevent 得到的手写笔设备名。
+ignored_devices = ["NVTCapacitivePenQ83c", "NVTCapacitivePenP81c", "NVTCapacitivePenM80p"]
+
+[orientation]
+backend = "ssc"
+# 实机 /vendor/firmware_mnt/image/adsps.jsn 存在。
+firmware = "adsps.jsn"
+calibration = { partition = "persist", path = "sensors" }
+# Sensor axes verified against the native landscape panel.
+swap_xy = true
+flip_x = true
+
+[firmware]
+# 实机确认 modem_a/b 分区存在，remoteproc 3000000.remoteproc-adsp（名 adsp）。
+partition = "modem"
+remoteproc = "adsp"
+
+# qseecomd keeps the secure world's persistent files here.
+[partitions]
+mounted = ["persist"]
+
+# Stock userspace gives the sensor listener access to the secure ADSP node.
+[[owners]]
+paths = ["/dev/fastrpc-adsp-secure"]
+user = "system"
+group = "system"
+mode = 0o644
+
+# The listener opens these wake-lock controls as system.
+[[owners]]
+paths = ["/sys/power/wake_lock", "/sys/power/wake_unlock"]
+user = "system"
+group = "system"
+mode = 0o644
+
+[modules]
+# system_dlkm 提供 rfkill.ko 等 GKI 模块，cfg80211.ko 依赖它。
+sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
+# 实机 /vendor/lib/modules/nt36532_touch.ko 存在。
+# frpc-adsprpc 提供 FastRPC ADSP 通道。正常系统使用 secure 节点，
+# sscrpcd 必须带 sensorspd adsp 参数（vendor.sensors.sscrpcd.rc）。
+load = ["nt36532_touch", "frpc-adsprpc"]
+
+[[service]]
+path = "/odm/bin/touch_report_debug"
+libraries = ["/odm/lib64", "/vendor/lib64", "/system/lib64"]
+user = "root"
+groups = ["root", "input", "system"]
+capabilities = ["SYS_NICE"]
+
+[[service]]
+path = "/vendor/bin/pd-mapper"
+mounts = [
+    { source = "/skyward/run/sensor-firmware", target = "/vendor/firmware_mnt" },
+    { source = "/skyward/run/sensor-firmware/image", target = "/vendor/firmware" },
+]
+libraries = ["/system/lib64", "/vendor/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"]
+
+[[service]]
+path = "/vendor/bin/sscrpcd"
+args = ["sensorspd", "adsp"]
+user = "system"
+groups = ["system", "wakelock"]
+capabilities = ["BLOCK_SUSPEND"]
+mounts = [{ source = "/skyward/run/sensor-persist", target = "/mnt/vendor/persist" }]
+environment = { ADSP_LIBRARY_PATH = "/vendor/lib/rfsa/adsp;/vendor/dsp;/vendor/firmware_mnt/image" }
+libraries = ["/system/lib64", "/vendor/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"]
+
+# Security services are discovered from the installed system by skyward-programs.
+# Do not start keymint, gatekeeper or weaver here: their init sockets and order
+# (including secure element support) must follow the installed Android build.
+[wlan]
+# yupei 的 WLAN 芯片是 WCN7750（实机 /vendor/lib/modules/qca_cld3_wcn7750.ko）。
+# rfkill 是 GKI 模块，位于 system_dlkm；vendor_dlkm 的 modules.dep 未记录
+# cfg80211 -> rfkill 的跨分区依赖，必须显式先加载 rfkill，否则 cfg80211
+# 会因找不到 rfkill 符号而 finit_module 失败（报 ENOENT）。
+modules = ["rfkill", "qca_cld3_wcn7750"]
+# yupei 用 icnss2 驱动（WCN7750），正确启动节点是 /sys/kernel/icnss/wpss_boot
+# （sheng 的 /sys/kernel/cnss/fs_ready 是 cnss2 驱动，不适用）。
+writes = [{ path = "/sys/kernel/icnss/wpss_boot", value = "1" }]
+firmware = [
+    { name = "wlan/qca_cld/wcn7750/WCNSS_qcom_cfg.ini", path = "/vendor/etc/wifi/wcn7750/WCNSS_qcom_cfg.ini" },
+    { name = "wlan/qca_cld/wcn7750/wlan_mac.bin", partition = "persist", path = "wlan/wlan_mac.bin", optional = true },
+]
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"
+libraries = ["/system/lib64", "/vendor/lib64", "/mnt/system/system/lib64", "/mnt/system/system/lib64/bootstrap"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"
+probe = "http://connect.rom.miui.com/generate_204"
+
+# Stock recovery SHA-256 verified against the downloaded image.
+[stock]
+version = "OS4.0.12.0.XPZCNXM"
+package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS4.0.12.0.XPZCNXM/yupei-ota_full-OS4.0.12.0.XPZCNXM-user-17.0-e8fb5f8e57.zip"
+recovery = "5921aa1f0144658e3e08748d560ca53933cb6d44d99334f08c72e1ef1479911f"
+
+# Wi-Fi-only 平板，无蜂窝基带/EFS 备份集（沿用 sheng）。
+[backup]
+efs = ["persist"]
+data_skipped = ["vendor/tzstorage", "vendor/qtee", "vendor/fingerprint", "vendor/fpc", "vendor/goodix"]
+
+[wipe]
+logs = ["/data/miuilog", "/data/vendor/diag", "/data/vendor/log", "/data/vendor/ramdump", "/data/vendor/tombstones", "/data/vendor/wlan_logs"]

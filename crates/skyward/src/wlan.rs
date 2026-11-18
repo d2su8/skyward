@@ -640,7 +640,8 @@ fn bring_up(cfg: &Config, modules: &[PathBuf]) -> Result<()> {
             thread::sleep(Duration::from_millis(100));
         }
     }
-    iface::set_up(&cfg.interface, true)
+    // wlan0 may appear before the firmware finishes its VDEV transition.
+    crate::wlan_ready::enable(|| iface::set_up(&cfg.interface, true), Duration::from_secs(5))
 }
 
 /// Put a file the driver asks for where the firmware loader looks.

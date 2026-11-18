@@ -91,6 +91,12 @@ read and set properties.
 | --- | --- | --- |
 | Xiaomi 17 Ultra | `nezha` | OS4.0.4.0.XPACNXM (Android 17) |
 | Xiaomi 13 Ultra | `ishtar` | OS3.0.308.0.WMACNXM (Android 16) |
+| Xiaomi Pad 8 | `yupei` | OS4.0.12.0.XPZCNXM (Android 17) |
+
+On yupei, touch, credential unlock, Wi-Fi, rotation, selected backup and restore
+operations, and a script ZIP with no partition writes have been tested. ROM/OTA
+writes and dual boot have not. Restart recovery before using Wi-Fi after a script
+install, which detaches the installed system's mounts.
 
 ### 🚧 Under construction
 
