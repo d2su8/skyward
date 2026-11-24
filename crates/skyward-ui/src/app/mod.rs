@@ -13,18 +13,18 @@ use crate::focus::{self, Group, Spot, Stop};
 use crate::font::Fonts;
 use crate::geom::Rect;
 use crate::glow::{self, GlowClock};
-use crate::lang::{Lang, Text};
+use crate::lang::{same, Lang, Text};
 use crate::motion::{self, Spring};
 use crate::pages::{self, Band, Ctx};
 use crate::search;
 use crate::settings::Settings;
 use crate::sprite::{Blurs, Sprite};
 use crate::term::{self, Term, TermKey};
+use crate::texts;
 use crate::theme::Theme;
-use crate::tr;
 use crate::widgets::{self, Bar, Bolt, Cap, Layer, WlanMark};
 use skyward_info::DeviceInfo;
-use skyward_install::{Event, ImageKind, Outcome, Reflash, Refusal, Stage};
+use skyward_install::{Event, ImageKind, Outcome, Place as FlashPlace, Reflash, Refusal, Stage, Target as FlashTarget};
 use skyward_net::download::{Failure, Progress};
 use skyward_net::github::{Build, Newest};
 use skyward_net::release::{Release, Unanswered};
@@ -136,7 +136,11 @@ pub enum Screen {
     /// started.
     PartWork,
     Language,
+    /// Whether the clock keeps the installed system's time zone, and the
+    /// parts of the world to choose one from.
     TimeZone,
+    /// The time zones of one part of the world.
+    TimeZones(Region),
     /// Saving the logs, as a bug report asks for them.
     Logs,
     /// Where an update the system installed stands, and merging it into
@@ -437,9 +441,9 @@ pub enum Effect {
     /// Start installing the file at this full path, opened in the file
     /// manager, telling how it goes as [`Effect::Sideload`] does.
     InstallPath(String),
-    /// Write the image the installer holds to `partition` in the slots
-    /// `pick` means.
-    Flash { partition: &'static str, pick: Pick },
+    /// Write the image the installer holds to `partition`, which lies in
+    /// `place`, in the slots `pick` means there.
+    Flash { partition: String, place: FlashPlace, pick: Pick },
     /// Stop waiting for the computer, for where an image goes, or for an
     /// update to be agreed to.
     Cancel,
@@ -551,10 +555,10 @@ pub enum Effect {
     /// a folder of their own in `place`, telling how it goes with
     /// [`App::backup_started`], [`App::backup_plan`], [`App::backup_at`]
     /// and [`App::backup_ended`].
-    Backup { parts: [bool; 4], place: Place, compress: bool, verify: bool },
+    Backup { parts: [bool; 5], place: Place, compress: bool, verify: bool },
     /// Restore the parts ticked of the backup in the folder `name` of
     /// `place`, telling how it goes as a backup does.
-    Restore { place: Place, name: String, parts: [bool; 4] },
+    Restore { place: Place, name: String, parts: [bool; 5] },
     /// Look for backups in the places that can be read, telling what is
     /// found with [`App::set_backups`].
     FindBackups { storage: bool, usb: bool },
@@ -1724,7 +1728,7 @@ use super::testing::*;
         let mut app = App::new(Screen::Installing, 3048, 2032, 2.5);
         app.configure_device(&cfg);
         app.state.code = "123456".into();
-        app.state.install = Install::Flashing { partition: "system", stage: None };
+        app.state.install = Install::Flashing { partition: "system".into(), stage: None };
         for (width, height) in [(2032, 3048), (3048, 2032), (2032, 3048)] {
             app.resize(width, height);
             assert!(app.tablet_mode);
@@ -1732,7 +1736,7 @@ use super::testing::*;
             assert_eq!(app.h, height);
             assert_eq!(app.screen(), Screen::Installing);
             assert_eq!(app.state.code, "123456");
-            assert!(matches!(app.state.install, Install::Flashing { partition: "system", .. }));
+            assert!(matches!(&app.state.install, Install::Flashing { partition, .. } if partition == "system"));
             app.resize(width, height);
             assert_eq!(app.w, width - width / 3);
         }
@@ -1834,7 +1838,7 @@ use super::testing::*;
         app.back(1300);
         assert_eq!(app.screen(), Screen::Settings, "back cannot expose the phone home menu");
         app.stack.push((Screen::Installing, 0.0, Focus::Unset));
-        app.state.install = Install::Flashing { partition: "recovery", stage: None };
+        app.state.install = Install::Flashing { partition: "recovery".into(), stage: None };
         assert!(app.tablet_section(Screen::Wipe, 1400).is_empty());
         assert_eq!(app.screen(), Screen::Installing, "sidebar navigation cannot leave partition writes");
     }

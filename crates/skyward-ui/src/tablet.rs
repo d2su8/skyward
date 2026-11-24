@@ -8,21 +8,21 @@ use crate::icons::{self, Icon};
 use crate::lang::{Lang, Text};
 use crate::pages::{BLUE, GREEN, ORANGE, PURPLE, RED, SLATE};
 use crate::theme::Theme;
-use crate::widgets;
+use crate::{texts, widgets};
 
 const SECTIONS: &[(Screen, Text, Icon)] = &[
-    (Screen::About, ["我的设备", "我的裝置", "My device"], Icon::Phone),
-    (Screen::Search, ["搜索", "搜尋", "Search"], Icon::More),
-    (Screen::Wlan, ["WLAN", "Wi-Fi", "Wi-Fi"], Icon::Wlan),
-    (Screen::Install, ["安装", "安裝", "Install"], Icon::Install),
-    (Screen::Backup, ["备份", "備份", "Backup"], Icon::Backup),
-    (Screen::Restore, ["恢复", "還原", "Restore"], Icon::Restore),
-    (Screen::Mount, ["挂载", "掛載", "Mount"], Icon::Mount),
-    (Screen::Decrypt, ["解密", "解密", "Decrypt"], Icon::Lock),
-    (Screen::Wipe, ["清除数据", "清除資料", "Wipe data"], Icon::Wipe),
-    (Screen::Advanced, ["高级", "進階", "Advanced"], Icon::More),
-    (Screen::Settings, ["设置", "設定", "Settings"], Icon::Gear),
-    (Screen::Reboot, ["重启", "重新啟動", "Reboot"], Icon::Power),
+    (Screen::About, texts::tablet::MY_DEVICE, Icon::Phone),
+    (Screen::Search, texts::search::SEARCH, Icon::More),
+    (Screen::Wlan, texts::page::WLAN, Icon::Wlan),
+    (Screen::Install, texts::page::INSTALL, Icon::Install),
+    (Screen::Backup, texts::page::BACKUP, Icon::Backup),
+    (Screen::Restore, texts::page::RESTORE, Icon::Restore),
+    (Screen::Mount, texts::page::MOUNT, Icon::Mount),
+    (Screen::Decrypt, texts::page::DECRYPT, Icon::Lock),
+    (Screen::Wipe, texts::page::WIPE, Icon::Wipe),
+    (Screen::Advanced, texts::page::ADVANCED, Icon::More),
+    (Screen::Settings, texts::page::SETTINGS, Icon::Gear),
+    (Screen::Reboot, texts::page::REBOOT, Icon::Power),
 ];
 
 pub(crate) fn is_section(screen: Screen) -> bool {
@@ -85,7 +85,7 @@ impl Tablet {
             let search = Rect::new(18.0*d, 148.0*d, self.width as f32-36.0*d, 42.0*d);
             widgets::search_bar(c, &t, search, 1.0);
             let words = widgets::search_words(&t, f, search,
-                app.state.lang.pick(["搜索恢复功能", "搜尋復原功能", "Search recovery"]));
+                app.state.lang.pick(texts::search::HINT));
             c.lay(&words, search.x.floor() as i32, search.y.floor() as i32, 1.0);
             let entries: Vec<_> = SECTIONS.iter().filter(|(s, _, _)| *s != Screen::Search && (*s != Screen::Wlan || wlan)).collect();
             let top = 202.0*d;
